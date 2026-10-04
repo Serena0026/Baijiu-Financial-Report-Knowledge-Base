@@ -36,13 +36,6 @@
   }
   button:disabled{opacity:.5; cursor:default}
 
-  .chips{display:flex; flex-wrap:wrap; gap:7px; margin-bottom:26px}
-  .chip{
-    padding:5px 11px; border:1px solid var(--line); border-radius:99px;
-    background:var(--card); font-size:13px; color:var(--dim); cursor:pointer;
-  }
-  .chip:hover{border-color:var(--accent); color:var(--accent)}
-
   .card{
     background:var(--card); border:1px solid var(--line); border-radius:11px;
     padding:18px 20px; margin-bottom:16px;
@@ -81,14 +74,6 @@
     <input id="q" placeholder="例如：贵州茅台2026年上半年直销渠道收入是多少？" autocomplete="off">
     <button id="go">提问</button>
   </div>
-  <div class="chips">
-    <span class="chip">贵州茅台2026年上半年直销渠道收入是多少？</span>
-    <span class="chip">16家白酒公司哪家净利润最高？</span>
-    <span class="chip">五粮液和洋河股份的营业收入对比</span>
-    <span class="chip">各家公司上半年经营活动现金流分别是多少？</span>
-    <span class="chip">山西汾酒2025年报里提到的主要风险有哪些？</span>
-  </div>
-
   <div id="out"></div>
 </div>
 
@@ -173,9 +158,6 @@ async function ask(q){
 $('#go').onclick = () => { ask($('#q').value); $('#q').value = ''; };
 $('#q').addEventListener('keydown', e => {
   if (e.key === 'Enter') { ask($('#q').value); $('#q').value = ''; }
-});
-document.querySelectorAll('.chip').forEach(c => {
-  c.onclick = () => ask(c.textContent);
 });
 </script>
 </body>

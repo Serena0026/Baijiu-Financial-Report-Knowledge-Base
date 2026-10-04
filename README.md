@@ -74,6 +74,7 @@ export DASHSCOPE_BASE_URL=https://<你的工作区>.maas.aliyuncs.com/compatible
 | `retrieve.py` | 向量 + BM25 → RRF 融合 → 同公司配额；全景题锚点通道 |
 | `server.py` | 本地 HTTP 服务 + 调大模型生成 |
 | `eval.py` | 10 道题的评测脚本与题库 |
+| `make_doc.py` | 把评测结果导出成 Word（`白酒财报问答_10道评测题.docx`） |
 | `web/index.html` | 问答页面（无密钥，密钥只在服务端） |
 | `check_dup.py` | 表格重复块的健康检查 |
 | `结论.md` | 一页结论：哪类题答得好、哪类翻车、为什么 |
