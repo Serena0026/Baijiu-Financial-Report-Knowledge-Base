@@ -1,0 +1,9 @@
+{
+  "fingerprint": "7c290eef7b4750a9",
+  "n_chunks": 15017,
+  "dim": 1024,
+  "backend": "api:text-embedding-v4",
+  "model": "text-embedding-v4",
+  "device": "api",
+  "built_at": "2026-10-04 16:20:19"
+}

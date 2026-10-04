@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>白酒财报问答知识库</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --ink:#1c1f23;
+    --dim:#6b7280; --accent:#8b1d24; --accent-soft:#fdf3f3;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif;
+  }
+  .wrap{max-width:860px; margin:0 auto; padding:28px 20px 64px}
+  header{border-bottom:2px solid var(--accent); padding-bottom:14px; margin-bottom:22px}
+  h1{margin:0 0 4px; font-size:21px; letter-spacing:.3px}
+  .sub{color:var(--dim); font-size:13px}
+  .badge{
+    display:inline-block; margin-top:8px; padding:2px 9px; border-radius:99px;
+    background:var(--accent-soft); color:var(--accent); font-size:12px;
+  }
+  .badge.warn{background:#fff7e6; color:#a15c00}
+
+  .ask{display:flex; gap:9px; margin-bottom:8px}
+  #q{
+    flex:1; padding:12px 14px; border:1px solid var(--line); border-radius:9px;
+    font:inherit; background:var(--card); outline:none;
+  }
+  #q:focus{border-color:var(--accent)}
+  button{
+    padding:12px 22px; border:0; border-radius:9px; background:var(--accent);
+    color:#fff; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:disabled{opacity:.5; cursor:default}
+
+  .chips{display:flex; flex-wrap:wrap; gap:7px; margin-bottom:26px}
+  .chip{
+    padding:5px 11px; border:1px solid var(--line); border-radius:99px;
+    background:var(--card); font-size:13px; color:var(--dim); cursor:pointer;
+  }
+  .chip:hover{border-color:var(--accent); color:var(--accent)}
+
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:11px;
+    padding:18px 20px; margin-bottom:16px;
+  }
+  .q-echo{font-weight:600; margin-bottom:12px; color:var(--accent)}
+  .answer{white-space:pre-wrap; word-break:break-word}
+  .answer.pending{color:var(--dim)}
+
+  .meta{
+    margin-top:14px; padding-top:11px; border-top:1px dashed var(--line);
+    font-size:12px; color:var(--dim); display:flex; gap:14px; flex-wrap:wrap;
+  }
+  details{margin-top:10px}
+  summary{cursor:pointer; font-size:13px; color:var(--dim); outline:none}
+  summary:hover{color:var(--accent)}
+  .cite{
+    padding:9px 0; border-bottom:1px solid var(--line); font-size:13px;
+  }
+  .cite:last-child{border-bottom:0}
+  .cite .src{color:var(--accent); font-weight:600}
+  .cite .txt{color:var(--dim); margin-top:3px; font-size:12px;
+             display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+             overflow:hidden}
+  .err{color:#b91c1c}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>白酒行业财报问答知识库</h1>
+    <div class="sub">16 家 A 股白酒公司 · 2026 半年报 + 2025 年报 · 共 32 份</div>
+    <div id="status" class="badge">连接中…</div>
+  </header>
+
+  <div class="ask">
+    <input id="q" placeholder="例如：贵州茅台2026年上半年直销渠道收入是多少？" autocomplete="off">
+    <button id="go">提问</button>
+  </div>
+  <div class="chips">
+    <span class="chip">贵州茅台2026年上半年直销渠道收入是多少？</span>
+    <span class="chip">16家白酒公司哪家净利润最高？</span>
+    <span class="chip">五粮液和洋河股份的营业收入对比</span>
+    <span class="chip">各家公司上半年经营活动现金流分别是多少？</span>
+    <span class="chip">山西汾酒2025年报里提到的主要风险有哪些？</span>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const out = $('#out');
+
+fetch('/api/health').then(r => r.json()).then(d => {
+  const el = $('#status');
+  if (d.has_key) {
+    el.textContent = `就绪 · ${d.n_chunks.toLocaleString()} 个知识块 · 生成模型 ${d.chat_model}`;
+  } else {
+    el.className = 'badge warn';
+    el.textContent = '未设置 DASHSCOPE_API_KEY —— 当前只检索不生成';
+  }
+}).catch(() => { $('#status').textContent = '服务未响应'; });
+
+function esc(s){
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function render(q, data){
+  const cites = data.cites.map(c => `
+    <div class="cite">
+      <div class="src">[${c.n}] ${esc(c.company)} · ${esc(c.report)} ·
+        ${esc(c.section || '未定章节')} · 第 ${c.page} 页
+        ${c.unit ? '· 单位：' + esc(c.unit) : '· <b>未标注单位</b>'}</div>
+      <div class="txt">${esc(c.preview)}</div>
+    </div>`).join('');
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="q-echo">${esc(q)}</div>
+    <div class="answer">${esc(data.answer)}</div>
+    <div class="meta">
+      <span>召回 ${data.n_hits} 个知识块</span>
+      <span>${data.mode === 'llm' ? '大模型生成' : '仅检索'}</span>
+      ${data.panorama ? '<span>已启用全景通道（覆盖 16 家）</span>' : ''}
+    </div>
+    <details><summary>查看 ${data.cites.length} 条出处</summary>${cites}</details>`;
+  out.prepend(card);
+}
+
+async function ask(q){
+  if (!q.trim()) return;
+  $('#go').disabled = true;
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `<div class="q-echo">${esc(q)}</div>
+                    <div class="answer pending">检索并生成中…</div>`;
+  out.prepend(card);
+
+  try {
+    const r = await fetch('/api/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q})
+    });
+    const d = await r.json();
+    card.remove();
+    if (d.error) {
+      const e = document.createElement('div');
+      e.className = 'card err';
+      e.textContent = '出错：' + d.error;
+      out.prepend(e);
+    } else {
+      render(q, d);
+    }
+  } catch (e) {
+    card.remove();
+    const el = document.createElement('div');
+    el.className = 'card err';
+    el.textContent = '请求失败：' + e.message;
+    out.prepend(el);
+  } finally {
+    $('#go').disabled = false;
+  }
+}
+
+$('#go').onclick = () => { ask($('#q').value); $('#q').value = ''; };
+$('#q').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { ask($('#q').value); $('#q').value = ''; }
+});
+document.querySelectorAll('.chip').forEach(c => {
+  c.onclick = () => ask(c.textContent);
+});
+</script>
+</body>
+</html>
