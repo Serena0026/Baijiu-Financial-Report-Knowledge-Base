@@ -17,7 +17,8 @@ docx 本身只是个 zip + 几个 XML，自己拼反而干净：无依赖、离�
 跑法：
     .venv/bin/python make_doc.py
 产出：
-    白酒财报问答_10道评测题.docx
+    白酒财报问答_10道评测题.docx   逐题评测记录（末尾内嵌总体结论）
+    结论.docx                      单独一份总体结论，供作业提交
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import config as C
 from eval import QUESTIONS, VERDICTS
 
 OUT = C.ROOT / "白酒财报问答_10道评测题.docx"
+CONCL = C.ROOT / "结论.docx"
 
 # A4 纵向，页边距 2cm。可用宽度 = 11906 - 1134*2 = 9638 twips，取 9600。
 PAGE_W, PAGE_H, MARGIN, TEXT_W = 11906, 16838, 1134, 9600
@@ -368,6 +370,25 @@ def build_blocks(rows: list[dict]) -> list[tuple]:
     return B
 
 
+def build_conclusion() -> list[tuple]:
+    """结论.docx：把 结论.md 单独装订成一份 Word，供作业提交。
+
+    它和主文档末尾的「五、总体结论」是同一段文字的两种装订 —— 主文档里
+    shift=1 挂在大标题下，这里 shift=0 让它自己当一级标题。
+
+    2026-10-13 补的：这份文件以前不在任何脚本里，头上却印着「与仓库里的
+    结论.md 同源，改一处即可」，于是它漂成了 10-04 的旧版 —— 成绩还停在
+    「答对 8/10」「类型二 · 检索失败」。**声称同源就得真有个脚本去同步**，
+    否则那句声明本身就是在骗人。
+    """
+    src = C.ROOT / "结论.md"
+    if not src.exists():
+        return []
+    return ([("h", 1, "总体结论"),
+             ("meta", "（由 make_doc.py 从 结论.md 生成，改一处即可 —— 别手改这份。）")]
+            + md_blocks(src.read_text(encoding="utf-8")))
+
+
 # ---------------------------------------------------------------- docx
 
 CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -465,6 +486,14 @@ def main() -> int:
     write_docx(render(build_blocks(rows)), OUT)
     print(f"✅ 已生成 {OUT.name}"
           f"（{OUT.stat().st_size/1024:.0f} KB，{len(rows)} 题）")
+
+    blocks = build_conclusion()
+    if blocks:
+        write_docx(render(blocks), CONCL)
+        print(f"✅ 已生成 {CONCL.name}"
+              f"（{CONCL.stat().st_size/1024:.0f} KB，从 结论.md 重出）")
+    else:
+        print("⚠️  没找到 结论.md，跳过 结论.docx")
     return 0
 
 
