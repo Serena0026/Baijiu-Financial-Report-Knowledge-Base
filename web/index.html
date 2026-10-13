@@ -60,6 +60,23 @@
              display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
              overflow:hidden}
   .err{color:#b91c1c}
+
+  /* 覆盖地图。字号比正文小一档，横排能放下八列；窄屏让它横向滚，别挤成竖条。 */
+  table.cover{
+    width:100%; margin-top:8px; border-collapse:collapse; font-size:11px;
+    display:block; overflow-x:auto; white-space:nowrap;
+  }
+  table.cover th{
+    text-align:left; font-weight:600; color:var(--dim);
+    border-bottom:1px solid var(--line); padding:5px 8px 5px 0;
+  }
+  table.cover td{
+    padding:4px 8px 4px 0; border-bottom:1px solid var(--line);
+    color:var(--dim); vertical-align:top;
+  }
+  table.cover td.ok{color:#0a7d3f}
+  table.cover td.warn, .meta .warn{color:#a15c00}
+  table.cover td.bad{color:#b91c1c}
 </style>
 </head>
 <body>
@@ -95,6 +112,46 @@ function esc(s){
   return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+// 覆盖地图：全景题按公司取证的结果。状态、取值、期次、口径、取自哪一页。
+// 缺据/部分的公司要显眼——它们正是"不许拿别家数据替它补上"的那几家。
+const COVER = {covered: ['已覆盖', 'ok'], partial: ['部分覆盖', 'warn'],
+               missing: ['缺据', 'bad']};
+
+function coverageTag(cov){
+  if (!cov || !cov.length) return '';
+  const n = k => cov.filter(e => e.status === k).length;
+  const bad = cov.filter(e => e.status !== 'covered').map(e => e.company);
+  const parts = [`已覆盖 ${n('covered')}/${cov.length}`];
+  if (n('partial')) parts.push(`部分 ${n('partial')}`);
+  if (n('missing')) parts.push(`缺据 ${n('missing')}`);
+  return `<span class="${bad.length ? 'warn' : ''}">覆盖地图：`
+       + esc(parts.join(' · '))
+       + (bad.length ? `（${esc(bad.join('、'))}）` : '') + '</span>';
+}
+
+function coverageDetail(cov){
+  if (!cov || !cov.length) return '';
+  const rows = cov.map(e => {
+    const [label, cls] = COVER[e.status] || [e.status, ''];
+    return `<tr>
+      <td>${esc(e.company)}</td>
+      <td class="${cls}">${label}</td>
+      <td>${esc(e.value || '—')}</td>
+      <td>${esc(e.yoy || '—')}</td>
+      <td>${esc(e.field || '—')}</td>
+      <td>${esc(e.period || '—')}</td>
+      <td>${esc(e.scope || '')}</td>
+      <td>${e.page ? 'p' + e.page + ' · ' + esc(e.source) : '—'}</td>
+      <td>${esc(e.note || '')}</td>
+    </tr>`;
+  }).join('');
+  return `<details><summary>查看覆盖地图（${cov.length} 家取证结果）</summary>
+    <table class="cover"><thead><tr>
+      <th>公司</th><th>状态</th><th>值</th><th>同比</th><th>项目</th><th>期次</th>
+      <th>口径</th><th>出处</th><th>说明</th>
+    </tr></thead><tbody>${rows}</tbody></table></details>`;
+}
+
 function render(q, data){
   const cites = data.cites.map(c => `
     <div class="cite">
@@ -112,9 +169,10 @@ function render(q, data){
     <div class="meta">
       <span>召回 ${data.n_hits} 个知识块</span>
       <span>${data.mode === 'llm' ? '大模型生成' : '仅检索'}</span>
-      ${data.panorama ? '<span>已启用全景通道（覆盖 16 家）</span>' : ''}
+      ${coverageTag(data.coverage)}
     </div>
-    <details><summary>查看 ${data.cites.length} 条出处</summary>${cites}</details>`;
+    <details><summary>查看 ${data.cites.length} 条出处</summary>${cites}</details>
+    ${coverageDetail(data.coverage)}`;
   out.prepend(card);
 }
 

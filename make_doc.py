@@ -30,7 +30,7 @@ import zipfile
 from pathlib import Path
 
 import config as C
-from eval import VERDICTS
+from eval import QUESTIONS, VERDICTS
 
 OUT = C.ROOT / "白酒财报问答_10道评测题.docx"
 
@@ -207,6 +207,37 @@ def render(blocks: list[tuple]) -> str:
 
 # ---------------------------------------------------------------- 组装
 
+_COVER_MARK = {"covered": "✅ 已覆盖", "partial": "⚠️ 部分覆盖", "missing": "❌ 缺据"}
+# 一行汇总里用的短词。缺据和部分覆盖得分开说 —— 混成一个「缺」字，
+# 会把「取到值、只是没取到同比那一列」写成「什么都没取到」。
+_BAD_WORD = {"partial": "部分覆盖", "missing": "缺据"}
+
+
+def coverage_summary_line(rows: list[dict]) -> str:
+    """总览下面那句结论。覆盖维度的结果在这里跟召回/回答并排说清楚。"""
+    n_ok = sum(1 for x in rows if x["answer_hit"] is True)
+    quad = []
+    for x in rows:
+        r, a = x["recall_hit"], x["answer_hit"]
+        if r is False and a is False:
+            quad.append(f"Q{x['id']} 属检索失败（块没召回，模型也答不出）")
+        elif r is True and a is False:
+            quad.append(f"Q{x['id']} 属生成失败（块在，模型没用对）")
+    pano = [x for x in rows if x.get("n_expected")]
+    miss = []
+    for x in pano:
+        bad = [f"{e['company']} · {_BAD_WORD.get(e['status'], e['status'])}"
+               for e in (x.get("coverage") or []) if e["status"] != "covered"]
+        if bad:
+            miss.append(f"Q{x['id']} {'、'.join(bad)}")
+    s = (f"答对 {n_ok} 题；" + "；".join(quad) + "。") if quad else f"答对 {n_ok} 题。"
+    if pano:
+        n_pc = sum(1 for x in pano if x.get("coverage_hit"))
+        s += (f"全景题覆盖通过 {n_pc}/{len(pano)} 题"
+              + (f"（{'；'.join(miss)}）" if miss else "") + "。")
+    return s
+
+
 def build_blocks(rows: list[dict]) -> list[tuple]:
     ok = {True: "✓", False: "✗", None: "—"}
     B: list[tuple] = []
@@ -225,27 +256,76 @@ def build_blocks(rows: list[dict]) -> list[tuple]:
                "全景题另走「按公司取主要会计数据块」的锚点通道"),
         ("li", "**生成**：qwen-plus，temperature 0.1，只依据给定片段作答"),
     ]
-    B.append(("p", "**判定口径** —— 每题分开判两个信号。只看最终答案对不对，"
-                   "无法区分「没检索到」和「检索到了但读错」："))
+    B.append(("p", "**判定口径** —— 每题分开判三个信号。只看最终答案对不对，"
+                   "无法区分「没检索到」「检索到了但读错」和"
+                   "「有一家公司压根没进视野」："))
     B.append(("table", ["信号", "含义"],
               [["召回", "召回的块里含标准答案"],
-               ["回答", "模型最终回答里含标准答案"]]))
+               ["回答", "模型最终回答里含标准答案"],
+               ["覆盖", "全景题按公司取证时，该取到的公司是不是都取到了被问的那个字段"
+                        "（单点题没有这一维）"]],
+              [900, 8700]))
 
     # ---------------------------------------------------------- 总览
     n_ok = sum(1 for x in rows if x["answer_hit"] is True)
     n_rec = sum(1 for x in rows if x["recall_hit"] is True)
+    pano = [x for x in rows if x.get("n_expected")]
     B.append(("h", 2, "二、总览"))
     B.append(("p", f"共 10 题（含 3 道跨公司全景题）。"
                    f"**召回命中 {n_rec}/10，回答命中 {n_ok}/10。**"))
-    B.append(("table", ["题号", "考点", "召回", "回答"],
+    B.append(("table", ["题号", "考点", "召回", "回答", "覆盖"],
               [[f"Q{x['id']}", x["type"], ok[x["recall_hit"]],
-                ok[x["answer_hit"]]] for x in rows],
-              [900, 5700, 1500, 1500]))
-    B.append(("meta", "答对 8 题；Q1 属生成失败（块在，模型没用对）；"
-                      "Q9 属检索失败（块没召回，模型也答不出）。"))
+                ok[x["answer_hit"]],
+                "—" if not x.get("n_expected")
+                else f"{ok[x.get('coverage_hit')]} "
+                     f"{x.get('n_covered')}/{x.get('n_expected')}"]
+               for x in rows],
+              [900, 5100, 900, 900, 1800]))
+    B.append(("meta", coverage_summary_line(rows)))
+
+    # ---------------------------------------------------------- 覆盖地图
+    B.append(("h", 2, "三、覆盖地图"))
+    B += [
+        ("p", "全景题不能只靠相似度排序 —— 那样每家公司取到的块质量参差，"
+              "取不到的那家**不会报错，只会静默消失**。所以改按公司取证："
+              "对每家公司先拿候选块，再校验**被问的那个字段到底在不在**，"
+              "结果记成一张覆盖地图（✅ 已覆盖 / ⚠️ 部分覆盖 / ❌ 缺据），"
+              "连取数出处、项目名、期次、口径一起交给模型。"
+              "「缺据」不是在检讨检索，而是把「这家本该有数据、这次没取到」"
+              "明说出来 —— 让模型不许拿行业常识或别家的数替它补上。"),
+        ("p", "**口径**这一列要分两种读法：「合并（第二节主表·规则推定）」是"
+              "按披露制式推的 —— 第二节「主要会计数据」按规则就是合并数，"
+              "不是从行文里猜的；「未标注」是**取数出处那块表里真的分不出**"
+              "合并还是母公司（第八节的合并报表与母公司报表，提取出来的块"
+              "前缀一模一样），不猜，如实标。"),
+    ]
+    for x in pano:
+        if not x.get("coverage"):
+            continue
+        B.append(("h", 3, f"Q{x['id']}　{x['type']}"))
+        flds = "、".join(sorted({e["field"] for e in x["coverage"] if e["field"]}))
+        B.append(("p", f"问的是「{flds or '（未识别出字段）'}」，"
+                       f"取证范围 {x.get('coverage_scope') or '未标注'}。"
+                       f"**已覆盖 {x['n_covered']} 家、部分 {x['n_partial']} 家、"
+                       f"缺据 {x['n_missing']} 家。**"))
+        B.append(("table",
+                  # 「同比」单列一栏：筛选题（"哪几家正增长"）能据以判断的就是这一列，
+                  # 不是营业收入绝对值。挤进「值」那一格写过一次，模型照样漏公司。
+                  ["公司", "状态", "取数出处", "项目", "值", "同比", "期次", "口径", "说明"],
+                  [[f"{e['company']}（{e['code']}）",
+                    _COVER_MARK.get(e["status"], e["status"]),
+                    (f"p{e['page']} · {e['source']}" if e.get("page") else "—"),
+                    e["field"] or "—", e["value"] or "—", e.get("yoy") or "—",
+                    e["period"] or "—",
+                    e["scope"], e["note"] or ""] for e in x["coverage"]],
+                  # 合计必须正好 TEXT_W=9600，多一列就从别处匀
+                  [1200, 800, 850, 1100, 1250, 750, 700, 1550, 1400]))
+        bad = [e["company"] for e in x["coverage"] if e["status"] != "covered"]
+        if bad:
+            B.append(("meta", f"⚠️ 覆盖不完整，缺的是：{'、'.join(bad)}。"))
 
     # ---------------------------------------------------------- 逐题
-    B.append(("h", 2, "三、逐题记录"))
+    B.append(("h", 2, "四、逐题记录"))
     for x in rows:
         B.append(("h", 3, f"Q{x['id']}　{x['type']}"))
         B.append(("p", f"**问题**：{x['q']}"))
@@ -256,6 +336,10 @@ def build_blocks(rows: list[dict]) -> list[tuple]:
         head = f"**召回了哪些块**：共 {x['n_total']} 块"
         if x["panorama"]:
             head += f"（检索 {x['n_search']} 块 ＋ 全景通道锚点，已去重）"
+        if x.get("n_expected"):
+            head += (f"；覆盖 **{x['n_covered']}/{x['n_expected']}** 家"
+                     f"（部分 {x['n_partial']}、缺据 {x['n_missing']}，"
+                     f"逐家清单见「三、覆盖地图」）")
         B.append(("p", head))
         B.append(("table",
                   ["#", "出处（公司 · 报告 · 章节 · 页）", "类型", "单位",
@@ -278,7 +362,7 @@ def build_blocks(rows: list[dict]) -> list[tuple]:
     # ---------------------------------------------------------- 结论
     concl = C.ROOT / "结论.md"
     if concl.exists():
-        B.append(("h", 2, "四、总体结论"))
+        B.append(("h", 2, "五、总体结论"))
         B.append(("meta", "（与仓库里的 结论.md 同源，改一处即可。）"))
         B += md_blocks(concl.read_text(encoding="utf-8"), shift=1)
     return B
@@ -369,6 +453,15 @@ def main() -> int:
         print("没找到 data/eval_raw.json，先跑 eval.py")
         return 1
     rows = json.loads(raw.read_text(encoding="utf-8"))
+    # 题面描述跟着题库刷新（和 eval.py --report-only 一个口径）：改句措辞
+    # 不该逼着重跑十次大模型。**测量结果**仍以 eval_raw.json 为准。
+    by_id = {q["id"]: q for q in QUESTIONS}
+    for x in rows:
+        q = by_id.get(x["id"])
+        if q:
+            x["q"], x["type"] = q["q"], q["type"]
+            x["gold_desc"], x["note"] = q["gold_desc"], q.get("note", "")
+            x["coverage_scope"] = q.get("coverage_scope", "")
     write_docx(render(build_blocks(rows)), OUT)
     print(f"✅ 已生成 {OUT.name}"
           f"（{OUT.stat().st_size/1024:.0f} KB，{len(rows)} 题）")

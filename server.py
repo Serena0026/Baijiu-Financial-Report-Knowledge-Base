@@ -30,6 +30,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import config as C
 import net
+# 只为复用 retrieve._yoy_num（把地图里的 "+20.87%" 还原成 20.87）来数方向小计。
+# 符号解析只有这一份实现，别在渲染层再写一遍 —— 两处解析口径迟早会分叉。
+# retrieve 不反向 import server，没有循环。
+import retrieve
 
 PORT = 8000
 WEB = C.ROOT / "web"
@@ -44,14 +48,107 @@ SYSTEM_PROMPT = """你是白酒行业财报分析助手。根据给定的财报�
    并提醒需核对原文。
 4. 片段里没有的，直接说"提供的资料中没有相关信息"，不要推测。
 5. 涉及多空对比或多期对比时，把口径说清楚（本期/上年同期、合并/母公司）。
-6. 回答用中文，简洁，先给结论再给依据。"""
+6. 回答用中文，简洁，先给结论再给依据。
+7. 如果上下文前面给了【证据覆盖地图】，那是本次**按公司取证**的总账：地图上
+   每一行的数字都取自方括号指向的那个片段。地图里标「缺据」或「部分覆盖」的公司，
+   你必须在回答里点名说明是哪几家、缺的是哪一项，不能略过不提，也不能拿行业常识
+   或别家的数据替它补上。
+8. 做「全部/最高/都是负数/有哪几家」这类**全称判断或筛选**之前先看覆盖地图：
+   只要有任意一家是「缺据」或「部分覆盖」，就不能对它下全称结论，要写成
+   "在已取到数据的 N 家里……，另有 M 家缺据/缺项，无法判断"。
+9. 引用数字时除了 [编号]，还要带上口径与期次，形如
+   「28,416,674,541.77 元（2026 年上半年，合并口径）[8]」；
+   地图上标「口径未标注」的，要写明"该表未标注合并/母公司口径，需核对原文"。
+   另注意「营业收入」与「营业总收入」是两个不同的行项目，别混用。
+10. 筛选题（"有哪几家……"）要把**每一家**你据以判断的数值连同 [编号] 列出来，
+    一行一家；不允许用"其余各家均为……""详见下表"之类的话代替实际数值 ——
+    凡是写不出数值的判断，就等于没有依据，要改成"该家数据未取到"。
+    更不允许写出"见下表"却根本没有表。
+11. **筛选题一律照覆盖地图数，不要自己回原文翻。** 地图每一行都带「同比 +x%」，
+    已经**按同比降序排好**（正号都在最前面），末尾还有一行**「同比方向小计」**
+    给出正几家、负几家 —— 那是给你对账用的数，你列的名单家数必须与它一致，
+    对不上就回去重数。地图标「同比：未取到」的公司**方向不可判断**，
+    不计入任何一侧，单独点名。
+    —— 2026-10-12 实测：地图当时只摆了营业收入绝对值、没摆同比，模型只好自己回
+    16 张表里翻，把全场增速最高的五粮液 +20.87% 整个漏掉，还写"其余 13 家均同比下降"。
+12. 结论必须与你列出的数值**逐条对得上**：说"其余各家均……"之前，回看你列的那几行，
+    确认没有例外；写"共 N 家"之前，照列表数一遍再写 N。
+    **先数清楚再落笔** —— 答案里不允许出现"注意：上文漏列""修正："这类自我更正，
+    那说明你是边写边数的。只呈现最终结论。
+    —— 本轮实测出现过自相矛盾：15 家逐家列出，其中明明有 +1.47% 和 +20.87%，
+    结论却写"其余 13 家均同比下降""共 2 家"。"""
 
 
 # ---------------------------------------------------------------- 生成
 
-def build_context(hits: list[dict]) -> tuple[str, list[dict]]:
-    """把召回块拼成带编号的上下文，同时产出给前端的引用列表。"""
+_COVER_MARK = {"covered": "✅ 已覆盖", "partial": "⚠️ 部分覆盖", "missing": "❌ 缺据"}
+
+
+def render_coverage(coverage, numbering: dict[int, int]) -> str:
+    """把覆盖地图渲染成一段抬头，插在片段之前（模型先读地图、再读原文）。
+
+    每行都是「公司 + 值 + 期次 + 口径 + 出处页 + 片段号」，紧挨着放在一起 ——
+    老师那句"数值进了图谱只剩一个节点、不知道是谁的哪个口径哪一期"要的正是这个：
+    每个数都能一眼回到那张表。地图不替代原文片段，它只是取证的结论与索引。
+    """
+    if not coverage:
+        return ""
+    fields = "、".join(sorted({e.field for e in coverage if e.field})) or "（未识别出可比对的字段）"
+    n_c = sum(1 for e in coverage if e.status == "covered")
+    n_p = sum(1 for e in coverage if e.status == "partial")
+    n_m = sum(1 for e in coverage if e.status == "missing")
+    # 有没有任何一家带同比 —— 有就在抬头点明，让模型知道筛选可以直接数这一列。
+    n_yoy = sum(1 for e in coverage if e.yoy)
+    lines = [
+        f"【证据覆盖地图】本次按公司取证：字段「{fields}」，"
+        f"应取证 {len(coverage)} 家，已覆盖 {n_c} 家、部分 {n_p} 家、缺据 {n_m} 家。"
+        + (f"其中 {n_yoy} 家带同比。" if n_yoy else "")
+    ]
+    for e in coverage:
+        seg = f"{_COVER_MARK.get(e.status, e.status)}　{e.company}（{e.code}）"
+        if e.doc is not None:
+            n = numbering.get(e.doc)
+            # 同比必须跟字段值挨着摆，不能只给绝对值。2026-10-12 实测：
+            # 地图只报「营业收入 28,416,674,541.77」时，问「哪几家同比正增长」的模型
+            # 得自己回 16 张原文表里翻同比，五粮液的 +20.87% 又被漏掉（它的同比恰好挂在
+            # 一行丢了行标签的数据上）。摆出来，这道题就退化成照着数。
+            seg += (f"　{e.field} {e.value or '—'}"
+                    + (f"　同比 {e.yoy}" if e.yoy else "　同比：未取到")
+                    + f"　{e.period}"
+                    f"　口径：{e.scope}　{e.source} p{e.page}"
+                    + (f" · 片段[{n}]" if n else ""))
+        if e.note:
+            seg += f"　—— {e.note}"
+        lines.append("  " + seg)
+    if n_yoy:
+        # 方向小计 —— 给模型的**对账数**，不是替它下结论：哪几家仍要它按公司名列。
+        # 2026-10-12 实测：同比列摆上地图之后，模型仍写"其余 12 家同比均为负增长，
+        # 无例外"，而五粮液那行明明白白写着 +20.87%。它要对 16 行同构数据做一次计数，
+        # 做不对。摆一个它能对账的数，比在提示词里再写一遍"仔细数"管用。
+        # 只对同比列做：值列本身带符号（问"净利润为负"那类），模型看值列就能看出正负。
+        nums = [n for n in (retrieve._yoy_num(e.yoy) for e in coverage) if n is not None]
+        pos, neg = sum(1 for n in nums if n > 0), sum(1 for n in nums if n < 0)
+        lines.append(f"　—— 同比方向小计（对账用）：正 {pos} 家、负 {neg} 家、"
+                     f"方向不可判断 {len(coverage) - pos - neg} 家。"
+                     f"你列的名单家数必须与它一致，对不上就回去重数。")
+    lines.append("取证说明：以上每个数都来自方括号指向的那个原文片段，未列出的块不作为数字依据。"
+                 "标「同比：未取到」的公司，其增减方向**不可判断**，"
+                 "既不能计入正增长，也不能计入下降，要单独点名说明。")
+    return "\n".join(lines) + "\n\n"
+
+
+def build_context(hits: list[dict], coverage=None) -> tuple[str, list[dict]]:
+    """把召回块拼成带编号的上下文，同时产出给前端的引用列表。
+
+    coverage 给了就先把覆盖地图放在所有片段之前；不给就与原来完全一样
+    （单点事实题不走这条）。
+    """
     blocks, cites = [], []
+    numbering: dict[int, int] = {}
+    for i, h in enumerate(hits, 1):
+        if h.get("doc") is not None:
+            numbering.setdefault(h["doc"], i)
+    head = render_coverage(coverage, numbering) if coverage else ""
     for i, h in enumerate(hits, 1):
         c = h["chunk"]
         unit = f"（单位：{c['unit']}）" if c.get("unit") else "（⚠️ 该表未标注单位）"
@@ -66,7 +163,7 @@ def build_context(hits: list[dict]) -> tuple[str, list[dict]]:
             "type": c["type"], "unit": c.get("unit", ""),
             "preview": c["text"][:150],
         })
-    return "\n".join(blocks), cites
+    return head + "\n".join(blocks), cites
 
 
 def call_dashscope(question: str, context: str) -> str:
@@ -146,12 +243,15 @@ class Handler(BaseHTTPRequestHandler):
             r = self.retriever
             panorama = r.is_panorama(q)
             hits = r.search(q, k=C.TOP_K_FINAL)
+            coverage = None
             if panorama:
-                # 全景题：把 16 家的锚点块也塞进上下文，否则覆盖不到那么宽
+                # 全景题：按公司取证 —— 每家一块，取不到就如实标 partial/missing，
+                # 并且把这张覆盖地图交给模型（见 render_coverage）。
+                coverage = r.panorama_evidence(q)
                 seen = {h["doc"] for h in hits}
                 hits += [h for h in r.panorama(q) if h["doc"] not in seen]
 
-            context, cites = build_context(hits)
+            context, cites = build_context(hits, coverage=coverage)
             try:
                 answer = call_dashscope(q, context)
                 mode = "llm"
@@ -163,6 +263,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {
                 "answer": answer, "cites": cites,
                 "mode": mode, "panorama": panorama, "n_hits": len(hits),
+                "coverage": ([{"company": e.company, "code": e.code,
+                               "status": e.status, "field": e.field,
+                               "value": e.value, "yoy": e.yoy, "period": e.period,
+                               "scope": e.scope, "source": e.source,
+                               "page": e.page, "note": e.note}
+                              for e in coverage] if coverage else None),
             })
         except Exception as e:
             return self._json(500, {"error": f"{type(e).__name__}: {e}"})
